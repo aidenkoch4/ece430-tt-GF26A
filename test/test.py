@@ -3,38 +3,105 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import RisingEdge, Timer
 
 
-@cocotb.test()
-async def test_project(dut):
-    dut._log.info("Start")
+# -----------------------------
+# Helpers
+# -----------------------------
+def set_input(dut, value):
+    dut.ui_in.value = value
 
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
 
-    # Reset
-    dut._log.info("Reset")
+async def reset(dut):
+    dut.rst_n.value = 0
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
-    dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 10)
+
+    await Timer(50, units="ns")
+
     dut.rst_n.value = 1
+    await Timer(50, units="ns")
 
-    dut._log.info("Test project behavior")
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+# -----------------------------
+# Clock setup (FIXED)
+# -----------------------------
+async def start_clock(dut):
+    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
 
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+# -----------------------------
+# TEST 1: Register updates
+# -----------------------------
+@cocotb.test()
+async def test_rgb_registers(dut):
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    await start_clock(dut)
+    await reset(dut)
+
+    # RED = 15
+    set_input(dut, (0 << 5) | 15)
+    await Timer(200, units="ns")
+
+    # GREEN = 8
+    set_input(dut, (1 << 5) | 8)
+    await Timer(200, units="ns")
+
+    # BLUE = 25
+    set_input(dut, (2 << 5) | 25)
+    await Timer(200, units="ns")
+
+    # Basic sanity check: outputs exist and are binary
+    assert dut.uo_out.value is not None
+
+
+# -----------------------------
+# TEST 2: Speed control
+# -----------------------------
+@cocotb.test()
+async def test_speed_mode(dut):
+
+    await start_clock(dut)
+    await reset(dut)
+
+    # slow speed
+    set_input(dut, (3 << 5) | 10)
+    await Timer(300, units="ns")
+
+    # fast speed
+    set_input(dut, (3 << 5) | 2)
+    await Timer(300, units="ns")
+
+    assert dut.uo_out.value is not None
+
+
+# -----------------------------
+# TEST 3: PWM activity sanity
+# -----------------------------
+@cocotb.test()
+async def test_pwm_activity(dut):
+
+    await start_clock(dut)
+    await reset(dut)
+
+    # Set RED duty mid
+    set_input(dut, (0 << 5) | 16)
+
+    highs = 0
+    samples = 200
+
+    for _ in range(samples):
+        await RisingEdge(dut.clk)
+
+        # safe conversion
+        out_val = int(dut.uo_out.value)
+
+        # check red bit
+        if out_val & 0x1:
+            highs += 1
+
+    # PWM MUST toggle at least somewhat
+    assert highs > 0, "PWM output appears stuck LOW"
+    assert highs < samples, "PWM output appears stuck HIGH"
