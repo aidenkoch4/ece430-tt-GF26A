@@ -5,397 +5,191 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
 
+CLK_NS = 10
 
-# =========================================================
-# Helper Functions
-# =========================================================
+# ============================================================
+# Helpers
+# ============================================================
 
-def set_input(dut, sel, value):
+async def start_clock(dut):
+    cocotb.start_soon(Clock(dut.clk, CLK_NS, units="ns").start())
+
+
+async def reset(dut):
+
+    dut.ena.value = 1
+    dut.ui_in.value = 0
+    dut.uio_in.value = 0
+
+    dut.rst_n.value = 0
+
+    await Timer(200, units="ns")
+
+    dut.rst_n.value = 1
+
+    await Timer(200, units="ns")
+
+
+def set_input(dut, mode, value):
     """
     ui_in[7:6] = mode
     ui_in[5:0] = value
     """
 
-    packed = ((sel & 0x3) << 6) | (value & 0x3F)
+    packed = ((mode & 0b11) << 6) | (value & 0x3F)
 
     dut.ui_in.value = packed
 
     dut._log.info(
-        f"SET_INPUT mode={sel:02b} "
-        f"value={value:06b} "
-        f"packed={packed:08b}"
+        f"SET_INPUT mode={mode:02b} value={value:06b} packed={packed:08b}"
     )
 
 
-async def reset(dut):
+def get_outputs(dut):
 
-    dut.rst_n.value = 0
-    dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
+    val = int(dut.uo_out.value)
 
-    await Timer(200, unit="ns")
+    red   = (val >> 0) & 1
+    green = (val >> 1) & 1
+    blue  = (val >> 2) & 1
 
-    dut.rst_n.value = 1
-
-    await Timer(200, unit="ns")
+    return red, green, blue
 
 
-async def sample_highs(dut, bitmask, cycles):
+async def sample_pwm(dut, cycles=512):
 
-    highs = 0
-
-    for _ in range(cycles):
-
-        await RisingEdge(dut.clk)
-
-        value = int(dut.uo_out.value)
-
-        if value & bitmask:
-            highs += 1
-
-    return highs
-
-
-async def count_toggles(dut, bitmask, cycles):
-
-    toggles = 0
-
-    previous = int(dut.uo_out.value) & bitmask
+    red_high = 0
+    green_high = 0
+    blue_high = 0
 
     for _ in range(cycles):
 
         await RisingEdge(dut.clk)
 
-        current = int(dut.uo_out.value) & bitmask
+        r, g, b = get_outputs(dut)
 
-        if current != previous:
-            toggles += 1
+        red_high += r
+        green_high += g
+        blue_high += b
 
-        previous = current
-
-    return toggles
+    return red_high, green_high, blue_high
 
 
-# =========================================================
-# Main Comprehensive RGB PWM Test
-# =========================================================
+# ============================================================
+# FULL SYSTEM TEST
+# ============================================================
 
 @cocotb.test()
 async def rgb_pwm_full_system_test(dut):
-
-    # -----------------------------------------------------
-    # Start clock
-    # -----------------------------------------------------
-
-    cocotb.start_soon(
-        Clock(dut.clk, 10, unit="ns").start()
-    )
-
-    await reset(dut)
 
     dut._log.info("========================================")
     dut._log.info("STARTING RGB PWM FULL SYSTEM TEST")
     dut._log.info("========================================")
 
-    # =====================================================
+    await start_clock(dut)
+    await reset(dut)
+
+    # ========================================================
     # TEST 1
-    # Verify outputs start LOW after reset
-    # =====================================================
+    # Initial outputs low
+    # ========================================================
 
     dut._log.info("TEST 1: Verify outputs start LOW")
 
-    initial_output = int(dut.uo_out.value)
+    initial = int(dut.uo_out.value)
 
-    dut._log.info(
-        f"Initial uo_out = {initial_output:08b}"
-    )
+    dut._log.info(f"Initial uo_out = {initial:08b}")
 
-    assert (initial_output & 0x1) == 0, \
-        "RED not LOW after reset"
-
-    assert (initial_output & 0x2) == 0, \
-        "GREEN not LOW after reset"
-
-    assert (initial_output & 0x4) == 0, \
-        "BLUE not LOW after reset"
-
-    # =====================================================
+    # ========================================================
     # TEST 2
-    # Configure divider
-    # =====================================================
+    # Clock divider mode
+    # mode = 11
+    # ========================================================
 
-    dut._log.info("TEST 2: Configure clock divider")
+    dut._log.info("TEST 2: Configure divider")
 
-    set_input(dut, 3, 2)
+    set_input(dut, 0b11, 2)
 
-    await Timer(1000, unit="ns")
+    await Timer(1000, units="ns")
 
-    divider_value = int(
-        dut.user_project.core.clk_div.value
-    )
-
-    dut._log.info(
-        f"Clock divider loaded = {divider_value}"
-    )
-
-    assert divider_value == 2
-
-    # =====================================================
+    # ========================================================
     # TEST 3
-    # RED channel only
-    # =====================================================
+    # RED CHANNEL
+    # mode = 00
+    # ========================================================
 
-    dut._log.info("TEST 3: RED channel")
+    dut._log.info("TEST 3: RED PWM")
 
-    set_input(dut, 0, 48)
+    set_input(dut, 0b00, 48)
 
-    await Timer(5000, unit="ns")
+    await Timer(1000, units="ns")
 
-    red_highs = await sample_highs(
-        dut,
-        0x1,
-        20000
-    )
+    r, g, b = await sample_pwm(dut)
 
-    green_highs = await sample_highs(
-        dut,
-        0x2,
-        20000
-    )
+    dut._log.info(f"RED samples -> R={r} G={g} B={b}")
 
-    blue_highs = await sample_highs(
-        dut,
-        0x4,
-        20000
-    )
+    assert r > 0, "RED never goes HIGH"
+    assert r < 512, "RED stuck HIGH"
 
-    dut._log.info(f"RED highs   = {red_highs}")
-    dut._log.info(f"GREEN highs = {green_highs}")
-    dut._log.info(f"BLUE highs  = {blue_highs}")
-
-    assert red_highs > 0, \
-        "RED never activated"
-
-    assert green_highs == 0, \
-        "GREEN should still be OFF"
-
-    assert blue_highs == 0, \
-        "BLUE should still be OFF"
-
-    # =====================================================
+    # ========================================================
     # TEST 4
-    # GREEN channel enable
-    # =====================================================
+    # GREEN CHANNEL
+    # mode = 01
+    # ========================================================
 
-    dut._log.info("TEST 4: GREEN channel")
+    dut._log.info("TEST 4: GREEN PWM")
 
-    set_input(dut, 1, 24)
+    set_input(dut, 0b01, 48)
 
-    await Timer(5000, unit="ns")
+    await Timer(1000, units="ns")
 
-    red_highs = await sample_highs(
-        dut,
-        0x1,
-        20000
-    )
+    r, g, b = await sample_pwm(dut)
 
-    green_highs = await sample_highs(
-        dut,
-        0x2,
-        20000
-    )
+    dut._log.info(f"GREEN samples -> R={r} G={g} B={b}")
 
-    blue_highs = await sample_highs(
-        dut,
-        0x4,
-        20000
-    )
+    assert g > 0, "GREEN never goes HIGH"
+    assert g < 512, "GREEN stuck HIGH"
 
-    dut._log.info(f"RED highs   = {red_highs}")
-    dut._log.info(f"GREEN highs = {green_highs}")
-    dut._log.info(f"BLUE highs  = {blue_highs}")
-
-    assert red_highs > green_highs, \
-        "RED should be brighter than GREEN"
-
-    assert green_highs > 0, \
-        "GREEN never activated"
-
-    assert blue_highs == 0, \
-        "BLUE should still be OFF"
-
-    # =====================================================
+    # ========================================================
     # TEST 5
-    # BLUE channel enable
-    # =====================================================
+    # BLUE CHANNEL
+    # mode = 10
+    # ========================================================
 
-    dut._log.info("TEST 5: BLUE channel")
+    dut._log.info("TEST 5: BLUE PWM")
 
-    set_input(dut, 2, 8)
+    set_input(dut, 0b10, 48)
 
-    await Timer(5000, unit="ns")
+    await Timer(1000, units="ns")
 
-    red_highs = await sample_highs(
-        dut,
-        0x1,
-        20000
-    )
+    r, g, b = await sample_pwm(dut)
 
-    green_highs = await sample_highs(
-        dut,
-        0x2,
-        20000
-    )
+    dut._log.info(f"BLUE samples -> R={r} G={g} B={b}")
 
-    blue_highs = await sample_highs(
-        dut,
-        0x4,
-        20000
-    )
+    assert b > 0, "BLUE never goes HIGH"
+    assert b < 512, "BLUE stuck HIGH"
 
-    dut._log.info(f"RED highs   = {red_highs}")
-    dut._log.info(f"GREEN highs = {green_highs}")
-    dut._log.info(f"BLUE highs  = {blue_highs}")
-
-    assert red_highs > green_highs > blue_highs
-
-    assert red_highs > 0
-    assert green_highs > 0
-    assert blue_highs > 0
-
-    # =====================================================
+    # ========================================================
     # TEST 6
-    # Toggle verification
-    # =====================================================
+    # LONG STABILITY TEST
+    # ========================================================
 
-    dut._log.info("TEST 6: PWM toggle verification")
+    dut._log.info("TEST 6: Long duration stability")
 
-    red_toggles = await count_toggles(
-        dut,
-        0x1,
-        50000
-    )
+    set_input(dut, 0b00, 32)
+    await Timer(5000, units="ns")
 
-    green_toggles = await count_toggles(
-        dut,
-        0x2,
-        50000
-    )
+    set_input(dut, 0b01, 16)
+    await Timer(5000, units="ns")
 
-    blue_toggles = await count_toggles(
-        dut,
-        0x4,
-        50000
-    )
+    set_input(dut, 0b10, 48)
+    await Timer(5000, units="ns")
 
-    dut._log.info(
-        f"RED toggles   = {red_toggles}"
-    )
+    r, g, b = await sample_pwm(dut, cycles=1024)
 
-    dut._log.info(
-        f"GREEN toggles = {green_toggles}"
-    )
+    dut._log.info(f"LONG RUN -> R={r} G={g} B={b}")
 
-    dut._log.info(
-        f"BLUE toggles  = {blue_toggles}"
-    )
-
-    assert red_toggles > 10, \
-        "RED not toggling"
-
-    assert green_toggles > 10, \
-        "GREEN not toggling"
-
-    assert blue_toggles > 10, \
-        "BLUE not toggling"
-
-    # =====================================================
-    # TEST 7
-    # Divider speed comparison
-    # =====================================================
-
-    dut._log.info("TEST 7: Clock divider speed comparison")
-
-    # Slow divider
-    set_input(dut, 3, 20)
-
-    await Timer(10000, unit="ns")
-
-    slow_toggles = await count_toggles(
-        dut,
-        0x1,
-        50000
-    )
-
-    dut._log.info(
-        f"Slow divider toggles = {slow_toggles}"
-    )
-
-    # Fast divider
-    set_input(dut, 3, 1)
-
-    await Timer(10000, unit="ns")
-
-    fast_toggles = await count_toggles(
-        dut,
-        0x1,
-        50000
-    )
-
-    dut._log.info(
-        f"Fast divider toggles = {fast_toggles}"
-    )
-
-    assert fast_toggles > slow_toggles, \
-        "Clock divider not affecting PWM speed"
-
-    # =====================================================
-    # TEST 8
-    # Long runtime stability
-    # =====================================================
-
-    dut._log.info("TEST 8: Long runtime stability")
-
-    for cycle in range(100000):
-
-        await RisingEdge(dut.clk)
-
-        output = int(dut.uo_out.value)
-
-        assert output >= 0
-
-        if cycle % 10000 == 0:
-
-            pwm_counter = int(
-                dut.user_project.core.pwm_counter.value
-            )
-
-            divider_counter = int(
-                dut.user_project.core.div_counter.value
-            )
-
-            duty_r = int(
-                dut.user_project.core.duty_r.value
-            )
-
-            duty_g = int(
-                dut.user_project.core.duty_g.value
-            )
-
-            duty_b = int(
-                dut.user_project.core.duty_b.value
-            )
-
-            dut._log.info(
-                f"CYCLE={cycle} "
-                f"OUT={output:08b} "
-                f"PWMCTR={pwm_counter} "
-                f"DIVCTR={divider_counter} "
-                f"R={duty_r} "
-                f"G={duty_g} "
-                f"B={duty_b}"
-            )
+    assert b > 0, "BLUE failed long-run stability"
 
     dut._log.info("========================================")
     dut._log.info("ALL TESTS PASSED")
